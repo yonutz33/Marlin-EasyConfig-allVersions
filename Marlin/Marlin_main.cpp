@@ -7790,7 +7790,6 @@ inline void gcode_M105() {
     if (p < FAN_COUNT) {
       #if ENABLED(EXTRA_FAN_SPEED)
         const int16_t t = parser.intval('T');
-        NOMORE(t, 255);
         if (t > 0) {
           switch (t) {
             case 1:
@@ -7801,7 +7800,7 @@ inline void gcode_M105() {
               fanSpeeds[p] = new_fanSpeeds[p];
               break;
             default:
-              new_fanSpeeds[p] = t;
+              new_fanSpeeds[p] = min(t, 255);
               break;
           }
           return;
@@ -8463,7 +8462,7 @@ void report_current_position() {
   SERIAL_PROTOCOLPGM("X:");
   SERIAL_PROTOCOL(LOGICAL_X_POSITION(current_position[X_AXIS]));
   SERIAL_PROTOCOLPGM(" Y:");
-  SERIAL_PROTOCOL(LOGICAL_X_POSITION(current_position[Y_AXIS]));
+  SERIAL_PROTOCOL(LOGICAL_Y_POSITION(current_position[Y_AXIS]));
   SERIAL_PROTOCOLPGM(" Z:");
   SERIAL_PROTOCOL(LOGICAL_Z_POSITION(current_position[Z_AXIS]));
   SERIAL_PROTOCOLPGM(" E:");
@@ -8508,15 +8507,17 @@ void report_current_position() {
     SERIAL_PROTOCOLPGM("Raw:    ");
     report_xyz(current_position);
 
-    SERIAL_PROTOCOLPGM("Leveled:");
-    float leveled[XYZ] = { current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS] };
-    planner.apply_leveling(leveled);
-    report_xyz(leveled);
+    #if PLANNER_LEVELING
+      SERIAL_PROTOCOLPGM("Leveled:");
+      float leveled[XYZ] = { current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS] };
+      planner.apply_leveling(leveled);
+      report_xyz(leveled);
 
-    SERIAL_PROTOCOLPGM("UnLevel:");
-    float unleveled[XYZ] = { leveled[X_AXIS], leveled[Y_AXIS], leveled[Z_AXIS] };
-    planner.unapply_leveling(unleveled);
-    report_xyz(unleveled);
+      SERIAL_PROTOCOLPGM("UnLevel:");
+      float unleveled[XYZ] = { leveled[X_AXIS], leveled[Y_AXIS], leveled[Z_AXIS] };
+      planner.unapply_leveling(unleveled);
+      report_xyz(unleveled);
+    #endif
 
     #if IS_KINEMATIC
       #if IS_SCARA
@@ -9321,7 +9322,7 @@ inline void gcode_M226() {
           zprobe_zoffset += offs;
           refresh_zprobe_zoffset(); // This will babystep the axis
         #else
-          thermalManager.babystep_axis(Z_AXIS, parser.value_axis_units(Z_AXIS) * planner.axis_steps_per_mm[Z_AXIS]);
+          thermalManager.babystep_axis(Z_AXIS, offs * planner.axis_steps_per_mm[Z_AXIS]);
         #endif
       }
     #endif
