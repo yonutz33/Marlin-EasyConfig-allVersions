@@ -2416,8 +2416,20 @@ static void clean_up_after_endstop_or_probe_move() {
       : !position_is_reachable_by_probe(rx, ry)
     ) return NAN;
 
-    // Move the probe to the given XY
-    do_blocking_move_to_xy(nx, ny, XY_PROBE_FEEDRATE_MM_S);
+    const float nz = 
+      #if ENABLED(DELTA)
+        // Move below clip height or xy move will be aborted by do_blocking_move_to
+        min(current_position[Z_AXIS], delta_clip_start_height)
+      #else
+        current_position[Z_AXIS]
+      #endif
+    ;
+
+    const float old_feedrate_mm_s = feedrate_mm_s;
+    feedrate_mm_s = XY_PROBE_FEEDRATE_MM_S;
+
+    // Move the probe to the starting XYZ
+    do_blocking_move_to(nx, ny, nz);
 
     float measured_z = NAN;
     if (!DEPLOY_PROBE()) {
@@ -2442,6 +2454,8 @@ static void clean_up_after_endstop_or_probe_move() {
     #if ENABLED(DEBUG_LEVELING_FEATURE)
       if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("<<< probe_pt");
     #endif
+
+    feedrate_mm_s = old_feedrate_mm_s;
 
     if (isnan(measured_z)) {
       LCD_MESSAGEPGM(MSG_ERR_PROBING_FAILED);
@@ -3429,6 +3443,14 @@ inline void gcode_G0_G1(
       fast_move ? prepare_uninterpolated_move_to_destination() : prepare_move_to_destination();
     #else
       prepare_move_to_destination();
+    #endif
+	
+    #if ENABLED(NANODLP_Z_SYNC)
+      // If G0/G1 command include Z-axis, wait for move and output sync text.
+      if (parser.seenval('Z')) {
+        stepper.synchronize();
+        SERIAL_ECHOLNPGM(MSG_Z_MOVE_COMP);
+      }
     #endif
   }
 }
@@ -13901,12 +13923,21 @@ void setup() {
   #endif
 
   #if ENABLED(MIXING_EXTRUDER) && MIXING_VIRTUAL_TOOLS > 1
-    // Initialize mixing to 100% color 1
-    for (uint8_t i = 0; i < MIXING_STEPPERS; i++)
-      mixing_factor[i] = (i == 0) ? 1.0 : 0.0;
-    for (uint8_t t = 0; t < MIXING_VIRTUAL_TOOLS; t++)
+    // Virtual Tools 0, 1, 2, 3 = Filament 1, 2, 3, 4, etc.
+    for (uint8_t t = 0; t < MIXING_VIRTUAL_TOOLS && t < MIXING_STEPPERS; t++)
       for (uint8_t i = 0; i < MIXING_STEPPERS; i++)
-        mixing_virtual_tool_mix[t][i] = mixing_factor[i];
+        mixing_virtual_tool_mix[t][i] = (t == i) ? 1.0 : 0.0;
+
+    // Remaining virtual tools are 100% filament 1
+    #if MIXING_STEPPERS < MIXING_VIRTUAL_TOOLS
+      for (uint8_t t = MIXING_STEPPERS; t < MIXING_VIRTUAL_TOOLS; t++)
+        for (uint8_t i = 0; i < MIXING_STEPPERS; i++)
+          mixing_virtual_tool_mix[t][i] = (i == 0) ? 1.0 : 0.0;
+    #endif
+
+    // Initialize mixing to tool 0 color
+    for (uint8_t i = 0; i < MIXING_STEPPERS; i++)
+      mixing_factor[i] = mixing_virtual_tool_mix[0][i];
   #endif
 
   #if ENABLED(BLTOUCH)
