@@ -286,6 +286,9 @@ volatile long Stepper::endstops_trigsteps[XYZ];
 
 // Some useful constants
 
+#define ENABLE_STEPPER_DRIVER_INTERRUPT()  SBI(TIMSK1, OCIE1A)
+#define DISABLE_STEPPER_DRIVER_INTERRUPT() CBI(TIMSK1, OCIE1A)
+
 /**
  *         __________________________
  *        /|                        |\     _________________         ^
@@ -440,7 +443,8 @@ void Stepper::isr() {
   // If there is no current block, attempt to pop one from the buffer
   if (!current_block) {
     // Anything in the buffer?
-    if ((current_block = planner.get_current_block())) {
+    current_block = planner.get_current_block();
+    if (current_block) {
       trapezoid_generator_reset();
 
       // Initialize Bresenham counters to 1/2 the ceiling
