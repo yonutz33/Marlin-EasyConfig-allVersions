@@ -132,11 +132,7 @@ float Planner::min_feedrate_mm_s,
     float Planner::xy_skew_factor;
     #if ENABLED(SKEW_CORRECTION_FOR_Z)
       float Planner::xz_skew_factor, Planner::yz_skew_factor;
-    #else
-      constexpr float Planner::xz_skew_factor, Planner::yz_skew_factor;
     #endif
-  #else
-    constexpr float Planner::xy_skew_factor, Planner::xz_skew_factor, Planner::yz_skew_factor;
   #endif
 #endif
 
@@ -578,8 +574,6 @@ void Planner::calculate_volumetric_multipliers() {
           rx = temprx;
           ry = tempry;
         }
-        else
-          SERIAL_ECHOLN(MSG_SKEW_WARN);
       }
     #endif
 
