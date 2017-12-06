@@ -28,7 +28,6 @@
 #define ENDSTOPS_H
 
 #include "enum.h"
-#include "MarlinConfig.h"
 
 class Endstops {
 
@@ -44,15 +43,7 @@ class Endstops {
     #endif
         current_endstop_bits, old_endstop_bits;
 
-    Endstops() {
-      enable_globally(
-        #if ENABLED(ENDSTOPS_ALWAYS_ON_DEFAULT)
-          true
-        #else
-          false
-        #endif
-      );
-    };
+    Endstops() {};
 
     /**
      * Initialize the endstop pins
