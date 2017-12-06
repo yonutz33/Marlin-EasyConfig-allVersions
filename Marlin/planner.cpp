@@ -92,6 +92,8 @@ float Planner::max_feedrate_mm_s[XYZE_N], // Max speeds in mm per second
   uint8_t Planner::last_extruder = 0;     // Respond to extruder change
 #endif
 
+bool Planner::split_first_move = true;
+
 int16_t Planner::flow_percentage[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(100); // Extrusion factor for each extruder
 
 float Planner::e_factor[EXTRUDERS],               // The flow percentage and volumetric multiplier combine to scale E movement
@@ -1406,6 +1408,81 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
   COPY(position, target);
 
   recalculate();
+
+} // _buffer_steps()
+
+/**
+ * Planner::_buffer_line
+ *
+ * Add a new linear movement to the buffer in axis units.
+ *
+ * Leveling and kinematics should be applied ahead of calling this.
+ *
+ *  a,b,c,e   - target positions in mm and/or degrees
+ *  fr_mm_s   - (target) speed of the move
+ *  extruder  - target extruder
+ */
+void Planner::_buffer_line(const float &a, const float &b, const float &c, const float &e, const float &fr_mm_s, const uint8_t extruder) {
+  // When changing extruders recalculate steps corresponding to the E position
+  #if ENABLED(DISTINCT_E_FACTORS)
+    if (last_extruder != extruder && axis_steps_per_mm[E_AXIS_N] != axis_steps_per_mm[E_AXIS + last_extruder]) {
+      position[E_AXIS] = LROUND(position[E_AXIS] * axis_steps_per_mm[E_AXIS_N] * steps_to_mm[E_AXIS + last_extruder]);
+      last_extruder = extruder;
+    }
+  #endif
+
+  // The target position of the tool in absolute steps
+  // Calculate target position in absolute steps
+  const int32_t target[XYZE] = {
+    LROUND(a * axis_steps_per_mm[X_AXIS]),
+    LROUND(b * axis_steps_per_mm[Y_AXIS]),
+    LROUND(c * axis_steps_per_mm[Z_AXIS]),
+    LROUND(e * axis_steps_per_mm[E_AXIS_N])
+  };
+
+  /* <-- add a slash to enable
+    SERIAL_ECHOPAIR("  _buffer_line FR:", fr_mm_s);
+    #if IS_KINEMATIC
+      SERIAL_ECHOPAIR(" A:", a);
+      SERIAL_ECHOPAIR(" (", position[A_AXIS]);
+      SERIAL_ECHOPAIR("->", target[A_AXIS]);
+      SERIAL_ECHOPAIR(") B:", b);
+    #else
+      SERIAL_ECHOPAIR(" X:", a);
+      SERIAL_ECHOPAIR(" (", position[X_AXIS]);
+      SERIAL_ECHOPAIR("->", target[X_AXIS]);
+      SERIAL_ECHOPAIR(") Y:", b);
+    #endif
+    SERIAL_ECHOPAIR(" (", position[Y_AXIS]);
+    SERIAL_ECHOPAIR("->", target[Y_AXIS]);
+    #if ENABLED(DELTA)
+      SERIAL_ECHOPAIR(") C:", c);
+    #else
+      SERIAL_ECHOPAIR(") Z:", c);
+    #endif
+    SERIAL_ECHOPAIR(" (", position[Z_AXIS]);
+    SERIAL_ECHOPAIR("->", target[Z_AXIS]);
+    SERIAL_ECHOPAIR(") E:", e);
+    SERIAL_ECHOPAIR(" (", position[E_AXIS]);
+    SERIAL_ECHOPAIR("->", target[E_AXIS]);
+    SERIAL_ECHOLNPGM(")");
+  //*/
+
+  // DRYRUN ignores all temperature constraints and assures that the extruder is instantly satisfied
+  if (DEBUGGING(DRYRUN))
+    position[E_AXIS] = target[E_AXIS];
+
+  // Always split the first move into two (if not homing or probing)
+  if (!blocks_queued() && split_first_move) {
+    #define _BETWEEN(A) (position[A##_AXIS] + target[A##_AXIS]) >> 1
+    const int32_t between[XYZE] = { _BETWEEN(X), _BETWEEN(Y), _BETWEEN(Z), _BETWEEN(E) };
+    DISABLE_STEPPER_DRIVER_INTERRUPT();
+    _buffer_steps(between, fr_mm_s, extruder);
+    _buffer_steps(target, fr_mm_s, extruder);
+    ENABLE_STEPPER_DRIVER_INTERRUPT();
+  }
+  else
+    _buffer_steps(target, fr_mm_s, extruder);
 
   stepper.wake_up();
 
