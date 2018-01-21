@@ -1343,12 +1343,14 @@ bool get_target_extruder_from_command(const uint16_t code) {
 
     #if ENABLED(DELTA)
       switch(axis) {
-        case X_AXIS:
-        case Y_AXIS:
-          // Get a minimum radius for clamping
-          soft_endstop_radius = MIN3(FABS(max(soft_endstop_min[X_AXIS], soft_endstop_min[Y_AXIS])), soft_endstop_max[X_AXIS], soft_endstop_max[Y_AXIS]);
-          soft_endstop_radius_2 = sq(soft_endstop_radius);
-          break;
+        #if HAS_SOFTWARE_ENDSTOPS
+          case X_AXIS:
+          case Y_AXIS:
+            // Get a minimum radius for clamping
+            soft_endstop_radius = MIN3(FABS(max(soft_endstop_min[X_AXIS], soft_endstop_min[Y_AXIS])), soft_endstop_max[X_AXIS], soft_endstop_max[Y_AXIS]);
+            soft_endstop_radius_2 = sq(soft_endstop_radius);
+            break;
+        #endif
         case Z_AXIS:
           delta_clip_start_height = soft_endstop_max[axis] - delta_safe_distance_from_top();
         default: break;
@@ -3110,8 +3112,10 @@ static void homeaxis(const AxisEnum axis) {
 void gcode_get_destination() {
   LOOP_XYZE(i) {
     if (parser.seen(axis_codes[i])) {
-      const float v = parser.value_axis_units((AxisEnum)i) + (axis_relative_modes[i] || relative_mode ? current_position[i] : 0);
-      destination[i] = i == E_AXIS ? v : LOGICAL_TO_NATIVE(v, i);
+      const float v = parser.value_axis_units((AxisEnum)i);
+      destination[i] = (axis_relative_modes[i] || relative_mode)
+        ? current_position[i] + v
+        : (i == E_AXIS) ? v : LOGICAL_TO_NATIVE(v, i);
     }
     else
       destination[i] = current_position[i];
@@ -10604,26 +10608,44 @@ inline void gcode_M907() {
 #endif // HAS_MICROSTEPS
 
 #if HAS_CASE_LIGHT
+
   #ifndef INVERT_CASE_LIGHT
     #define INVERT_CASE_LIGHT false
   #endif
   uint8_t case_light_brightness;  // LCD routine wants INT
   bool case_light_on;
 
+  #if ENABLED(CASE_LIGHT_USE_NEOPIXEL)
+    LEDColor case_light_color =
+      #ifdef CASE_LIGHT_NEOPIXEL_COLOR
+        CASE_LIGHT_NEOPIXEL_COLOR
+      #else
+        { 255, 255, 255, 255 }
+      #endif
+    ;
+  #endif
+
   void update_case_light() {
-    pinMode(CASE_LIGHT_PIN, OUTPUT); // digitalWrite doesn't set the port mode
-    if (case_light_on) {
+    const uint8_t i = case_light_on ? case_light_brightness : 0, n10ct = INVERT_CASE_LIGHT ? 255 - i : i;
+
+    #if ENABLED(CASE_LIGHT_USE_NEOPIXEL)
+
+      leds.set_color(
+        MakeLEDColor(case_light_color.r, case_light_color.g, case_light_color.b, case_light_color.w, n10ct),
+        false
+      );
+
+    #else // !CASE_LIGHT_USE_NEOPIXEL
+
+      SET_OUTPUT(CASE_LIGHT_PIN);
       if (USEABLE_HARDWARE_PWM(CASE_LIGHT_PIN))
-        analogWrite(CASE_LIGHT_PIN, INVERT_CASE_LIGHT ? 255 - case_light_brightness : case_light_brightness);
-      else
-        WRITE(CASE_LIGHT_PIN, INVERT_CASE_LIGHT ? LOW : HIGH);
-    }
-    else {
-      if (USEABLE_HARDWARE_PWM(CASE_LIGHT_PIN))
-        analogWrite(CASE_LIGHT_PIN, INVERT_CASE_LIGHT ? 255 : 0);
-      else
-        WRITE(CASE_LIGHT_PIN, INVERT_CASE_LIGHT ? HIGH : LOW);
-    }
+        analogWrite(CASE_LIGHT_PIN, n10ct);
+      else {
+        const bool s = case_light_on ? !INVERT_CASE_LIGHT : INVERT_CASE_LIGHT;
+        WRITE(CASE_LIGHT_PIN, s ? HIGH : LOW);
+      }
+
+    #endif // !CASE_LIGHT_USE_NEOPIXEL
   }
 #endif // HAS_CASE_LIGHT
 
