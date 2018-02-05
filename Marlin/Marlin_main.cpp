@@ -350,8 +350,6 @@
 
 #if ENABLED(AUTO_BED_LEVELING_UBL)
   #include "ubl.h"
-  extern bool defer_return_to_status;
-  unified_bed_leveling ubl;
 #endif
 
 #if ENABLED(CNC_COORDINATE_SYSTEMS)
@@ -2069,7 +2067,7 @@ static void clean_up_after_endstop_or_probe_move() {
   #endif // BLTOUCH
 
   // returns false for ok and true for failure
-  bool set_probe_deployed(bool deploy) {
+  bool set_probe_deployed(const bool deploy) {
 
     #if ENABLED(DEBUG_LEVELING_FEATURE)
       if (DEBUGGING(LEVELING)) {
@@ -4077,12 +4075,6 @@ void home_all_axes() { gcode_G28(true); }
 #endif
 
 #if ENABLED(MESH_BED_LEVELING) || ENABLED(PROBE_MANUALLY)
-
-  #if ENABLED(LCD_BED_LEVELING)
-    extern bool lcd_wait_for_move;
-  #else
-    constexpr bool lcd_wait_for_move = false;
-  #endif
 
   inline void _manual_goto_xy(const float &rx, const float &ry) {
 
@@ -7636,8 +7628,10 @@ inline void gcode_M104() {
       }
     #endif
 
-    if (parser.value_celsius() > thermalManager.degHotend(target_extruder))
-      lcd_status_printf_P(0, PSTR("E%i %s"), target_extruder + 1, MSG_HEATING);
+    #if ENABLED(ULTRA_LCD)
+      if (parser.value_celsius() > thermalManager.degHotend(target_extruder))
+        lcd_status_printf_P(0, PSTR("E%i %s"), target_extruder + 1, MSG_HEATING);
+    #endif
   }
 
   #if ENABLED(AUTOTEMP)
@@ -7794,7 +7788,10 @@ inline void gcode_M109() {
         print_job_timer.start();
     #endif
 
-    if (thermalManager.isHeatingHotend(target_extruder)) lcd_status_printf_P(0, PSTR("E%i %s"), target_extruder + 1, MSG_HEATING);
+    #if ENABLED(ULTRA_LCD)
+      if (thermalManager.isHeatingHotend(target_extruder))
+        lcd_status_printf_P(0, PSTR("E%i %s"), target_extruder + 1, MSG_HEATING);
+    #endif
   }
   else return;
 
