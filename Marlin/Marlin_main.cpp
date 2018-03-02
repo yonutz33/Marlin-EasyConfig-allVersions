@@ -186,8 +186,8 @@
  * M380 - Activate solenoid on active extruder. (Requires EXT_SOLENOID)
  * M381 - Disable all solenoids. (Requires EXT_SOLENOID)
  * M400 - Finish all moves.
- * M401 - Lower Z probe. (Requires a probe)
- * M402 - Raise Z probe. (Requires a probe)
+ * M401 - Deploy and activate Z probe. (Requires a probe)
+ * M402 - Deactivate and stow Z probe. (Requires a probe)
  * M404 - Display or set the Nominal Filament Width: "W<diameter>". (Requires FILAMENT_WIDTH_SENSOR)
  * M405 - Enable Filament Sensor flow control. "M405 D<delay_cm>". (Requires FILAMENT_WIDTH_SENSOR)
  * M406 - Disable Filament Sensor flow control. (Requires FILAMENT_WIDTH_SENSOR)
@@ -220,7 +220,7 @@
  * M867 - Enable/disable or toggle error correction for position encoder modules.
  * M868 - Report or set position encoder module error correction threshold.
  * M869 - Report position encoder module error.
- * M900 - Get and/or Set advance K factor and WH/D ratio. (Requires LIN_ADVANCE)
+ * M900 - Get or Set Linear Advance K-factor. (Requires LIN_ADVANCE)
  * M906 - Set or get motor current in milliamps using axis codes X, Y, Z, E. Report values if no axis codes given. (Requires HAVE_TMC2130 or HAVE_TMC2208)
  * M907 - Set digital trimpot motor current using axis codes. (Requires a board with digital trimpots)
  * M908 - Control digital trimpot directly. (Requires DAC_STEPPER_CURRENT or DIGIPOTSS_PIN)
@@ -9650,12 +9650,12 @@ inline void gcode_M400() { stepper.synchronize(); }
 #if HAS_BED_PROBE
 
   /**
-   * M401: Engage Z Servo endstop if available
+   * M401: Deploy and activate the Z probe
    */
   inline void gcode_M401() { DEPLOY_PROBE(); }
 
   /**
-   * M402: Retract Z Servo endstop if enabled
+   * M402: Deactivate and stow the Z probe
    */
   inline void gcode_M402() { STOW_PROBE(); }
 
@@ -10457,9 +10457,9 @@ inline void gcode_M502() {
 
 #if ENABLED(LIN_ADVANCE)
   /**
-   * M900: Set and/or Get advance K factor
+   * M900: Get or Set Linear Advance K-factor
    *
-   *  K<factor>                  Set advance K factor
+   *  K<factor>   Set advance K factor
    */
   inline void gcode_M900() {
     if (parser.seenval('K')) {
