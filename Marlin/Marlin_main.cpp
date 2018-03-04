@@ -2889,6 +2889,7 @@ static void clean_up_after_endstop_or_probe_move() {
           #endif
           break;
       #endif
+      default: break;
     }
   }
 
@@ -3120,6 +3121,12 @@ static void homeaxis(const AxisEnum axis) {
   // Put away the Z probe
   #if HOMING_Z_WITH_PROBE
     if (axis == Z_AXIS && STOW_PROBE()) return;
+  #endif
+
+  // Clear retracted status if homing the Z axis
+  #if ENABLED(FWRETRACT)
+    if (axis == Z_AXIS)
+      for (uint8_t i = 0; i < EXTRUDERS; i++) fwretract.retracted[i] = false;
   #endif
 
   #if ENABLED(DEBUG_LEVELING_FEATURE)
@@ -10678,11 +10685,11 @@ inline void gcode_M502() {
       }
 
       #if Z_IS_TRINAMIC
-        uint16_t Z_current_1 = stepperZ.getCurrent(),
+        uint16_t Z_current_1 = stepperZ.getCurrent();
         stepperZ.setCurrent(_rms, R_SENSE, HOLD_MULTIPLIER);
       #endif
       #if Z2_IS_TRINAMIC
-        uint16_t Z2_current_1 = stepperZ.getCurrent();
+        uint16_t Z2_current_1 = stepperZ2.getCurrent();
         stepperZ2.setCurrent(_rms, R_SENSE, HOLD_MULTIPLIER);
       #endif
 
