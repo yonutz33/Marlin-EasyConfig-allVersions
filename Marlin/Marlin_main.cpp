@@ -89,7 +89,7 @@
  * M24  - Start/resume SD print. (Requires SDSUPPORT)
  * M25  - Pause SD print. (Requires SDSUPPORT)
  * M26  - Set SD position in bytes: "M26 S12345". (Requires SDSUPPORT)
- * M27  - Report SD print status. (Requires SDSUPPORT) Or, with 'S<seconds>' sets the SD status auto-report interval. (Requires AUTO_REPORT_SD_STATUS)
+ * M27  - Report SD print status. (Requires SDSUPPORT) Or, with 'S<seconds>' set the SD status auto-report interval. (Requires AUTO_REPORT_SD_STATUS)
  * M28  - Start SD write: "M28 /path/file.gco". (Requires SDSUPPORT)
  * M29  - Stop SD write. (Requires SDSUPPORT)
  * M30  - Delete file from SD: "M30 /path/file.gco"
@@ -134,7 +134,7 @@
  * M119 - Report endstops status.
  * M120 - Enable endstops detection.
  * M121 - Disable endstops detection.
- * M122 - Debug stepper (Requires HAVE_TMC2130)
+ * M122 - Debug stepper (Requires HAVE_TMC2130 or HAVE_TMC2208)
  * M125 - Save current position and move to filament change position. (Requires PARK_HEAD_ON_PAUSE)
  * M126 - Solenoid Air Valve Open. (Requires BARICUDA)
  * M127 - Solenoid Air Valve Closed. (Requires BARICUDA)
@@ -203,9 +203,9 @@
  * M540 - Enable/disable SD card abort on endstop hit: "M540 S<state>". (Requires ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED)
  * M600 - Pause for filament change: "M600 X<pos> Y<pos> Z<raise> E<first_retract> L<later_retract>". (Requires ADVANCED_PAUSE_FEATURE)
  * M603 - Configure filament change: "M603 T<tool> U<unload_length> L<load_length>". (Requires ADVANCED_PAUSE_FEATURE)
+ * M605 - Set Dual X-Carriage movement mode: "M605 S<mode> [X<x_offset>] [R<temp_offset>]". (Requires DUAL_X_CARRIAGE)
  * M665 - Set delta configurations: "M665 L<diagonal rod> R<delta radius> S<segments/s> A<rod A trim mm> B<rod B trim mm> C<rod C trim mm> I<tower A trim angle> J<tower B trim angle> K<tower C trim angle>" (Requires DELTA)
- * M666 - Set delta endstop adjustment. (Requires DELTA)
- * M605 - Set dual x-carriage movement mode: "M605 S<mode> [X<x_offset>] [R<temp_offset>]". (Requires DUAL_X_CARRIAGE)
+ * M666 - Set/get endstop offsets for delta (Requires DELTA) or dual endstops (Requires [XYZ]_DUAL_ENDSTOPS).
  * M701 - Load filament (requires FILAMENT_LOAD_UNLOAD_GCODES)
  * M702 - Unload filament (requires FILAMENT_LOAD_UNLOAD_GCODES)
  * M851 - Set Z probe's Z offset in current units. (Negative = below the nozzle.)
@@ -563,16 +563,6 @@ uint8_t target_extruder;
   #endif
 #elif IS_KINEMATIC
   #define ADJUST_DELTA(V) NOOP
-#endif
-
-#if ENABLED(X_DUAL_ENDSTOPS)
-  float x_endstop_adj;                // Initialized by settings.load()
-#endif
-#if ENABLED(Y_DUAL_ENDSTOPS)
-  float y_endstop_adj;                // Initialized by settings.load()
-#endif
-#if ENABLED(Z_DUAL_ENDSTOPS)
-  float z_endstop_adj;                // Initialized by settings.load()
 #endif
 
 // Extruder offsets
@@ -1724,28 +1714,6 @@ static void clean_up_after_endstop_or_probe_move() {
   refresh_cmd_timeout();
 }
 
-#if HAS_BED_PROBE
-  /**
-   * Raise Z to a minimum height to make room for a probe to move
-   */
-  inline void do_probe_raise(const float z_raise) {
-    #if ENABLED(DEBUG_LEVELING_FEATURE)
-      if (DEBUGGING(LEVELING)) {
-        SERIAL_ECHOPAIR("do_probe_raise(", z_raise);
-        SERIAL_CHAR(')');
-        SERIAL_EOL();
-      }
-    #endif
-
-    float z_dest = z_raise;
-    if (zprobe_zoffset < 0) z_dest -= zprobe_zoffset;
-
-    if (z_dest > current_position[Z_AXIS])
-      do_blocking_move_to_z(z_dest);
-  }
-
-#endif // HAS_BED_PROBE
-
 #if HAS_AXIS_UNHOMED_ERR
 
   bool axis_unhomed_error(const bool x/*=true*/, const bool y/*=true*/, const bool z/*=true*/) {
@@ -2064,6 +2032,27 @@ static void clean_up_after_endstop_or_probe_move() {
 
   #endif // BLTOUCH
 
+  /**
+   * Raise Z to a minimum height to make room for a probe to move
+   */
+  inline void do_probe_raise(const float z_raise) {
+    #if ENABLED(DEBUG_LEVELING_FEATURE)
+      if (DEBUGGING(LEVELING)) {
+        SERIAL_ECHOPAIR("do_probe_raise(", z_raise);
+        SERIAL_CHAR(')');
+        SERIAL_EOL();
+      }
+    #endif
+
+    float z_dest = z_raise;
+    if (zprobe_zoffset < 0) z_dest -= zprobe_zoffset;
+
+    NOMORE(z_dest, Z_MAX_POS);
+
+    if (z_dest > current_position[Z_AXIS])
+      do_blocking_move_to_z(z_dest);
+  }
+
   // returns false for ok and true for failure
   bool set_probe_deployed(const bool deploy) {
 
@@ -2078,13 +2067,21 @@ static void clean_up_after_endstop_or_probe_move() {
 
     // Make room for probe to deploy (or stow)
     // Fix-mounted probe should only raise for deploy
-    if (
-      #if ENABLED(FIX_MOUNTED_PROBE)
-        deploy
-      #else
-        true
-      #endif
-    ) do_probe_raise(max(Z_CLEARANCE_BETWEEN_PROBES, Z_CLEARANCE_DEPLOY_PROBE));
+    #if ENABLED(FIX_MOUNTED_PROBE)
+      const bool deploy_stow_condition = deploy;
+    #else
+      constexpr bool deploy_stow_condition = true;
+    #endif
+
+    // For beds that fall when Z is powered off only raise for trusted Z
+    #if ENABLED(UNKNOWN_Z_NO_RAISE)
+      const bool unknown_condition = axis_known_position[Z_AXIS];
+    #else
+      constexpr float unknown_condition = true;
+    #endif
+
+    if (deploy_stow_condition && unknown_condition)
+      do_probe_raise(max(Z_CLEARANCE_BETWEEN_PROBES, Z_CLEARANCE_DEPLOY_PROBE));
 
     #if ENABLED(Z_PROBE_SLED) || ENABLED(Z_PROBE_ALLEN_KEY)
       #if ENABLED(Z_PROBE_SLED)
@@ -3023,8 +3020,8 @@ static void homeaxis(const AxisEnum axis) {
     const bool pos_dir = axis_home_dir > 0;
     #if ENABLED(X_DUAL_ENDSTOPS)
       if (axis == X_AXIS) {
-        const bool lock_x1 = pos_dir ? (x_endstop_adj > 0) : (x_endstop_adj < 0);
-        const float adj = FABS(x_endstop_adj);
+        const bool lock_x1 = pos_dir ? (endstops.x_endstop_adj > 0) : (endstops.x_endstop_adj < 0);
+        const float adj = FABS(endstops.x_endstop_adj);
         if (lock_x1) stepper.set_x_lock(true); else stepper.set_x2_lock(true);
         do_homing_move(axis, pos_dir ? -adj : adj);
         if (lock_x1) stepper.set_x_lock(false); else stepper.set_x2_lock(false);
@@ -3033,8 +3030,8 @@ static void homeaxis(const AxisEnum axis) {
     #endif
     #if ENABLED(Y_DUAL_ENDSTOPS)
       if (axis == Y_AXIS) {
-        const bool lock_y1 = pos_dir ? (y_endstop_adj > 0) : (y_endstop_adj < 0);
-        const float adj = FABS(y_endstop_adj);
+        const bool lock_y1 = pos_dir ? (endstops.y_endstop_adj > 0) : (endstops.y_endstop_adj < 0);
+        const float adj = FABS(endstops.y_endstop_adj);
         if (lock_y1) stepper.set_y_lock(true); else stepper.set_y2_lock(true);
         do_homing_move(axis, pos_dir ? -adj : adj);
         if (lock_y1) stepper.set_y_lock(false); else stepper.set_y2_lock(false);
@@ -3043,8 +3040,8 @@ static void homeaxis(const AxisEnum axis) {
     #endif
     #if ENABLED(Z_DUAL_ENDSTOPS)
       if (axis == Z_AXIS) {
-        const bool lock_z1 = pos_dir ? (z_endstop_adj > 0) : (z_endstop_adj < 0);
-        const float adj = FABS(z_endstop_adj);
+        const bool lock_z1 = pos_dir ? (endstops.z_endstop_adj > 0) : (endstops.z_endstop_adj < 0);
+        const float adj = FABS(endstops.z_endstop_adj);
         if (lock_z1) stepper.set_z_lock(true); else stepper.set_z2_lock(true);
         do_homing_move(axis, pos_dir ? -adj : adj);
         if (lock_z1) stepper.set_z_lock(false); else stepper.set_z2_lock(false);
@@ -3989,9 +3986,15 @@ inline void gcode_G28(const bool always_home_all) {
 
     #endif
 
-    if (home_all || homeX || homeY) {
+    #if ENABLED(UNKNOWN_Z_NO_RAISE)
+      const float z_homing_height = axis_known_position[Z_AXIS] ? Z_HOMING_HEIGHT : 0;
+    #else
+      constexpr float z_homing_height = Z_HOMING_HEIGHT;
+    #endif
+
+    if (z_homing_height && (home_all || homeX || homeY)) {
       // Raise Z before homing any other axes and z is not already high enough (never lower z)
-      destination[Z_AXIS] = Z_HOMING_HEIGHT;
+      destination[Z_AXIS] = z_homing_height;
       if (destination[Z_AXIS] > current_position[Z_AXIS]) {
 
         #if ENABLED(DEBUG_LEVELING_FEATURE)
@@ -8850,21 +8853,27 @@ inline void gcode_M203() {
  *    T = Travel (non printing) moves
  */
 inline void gcode_M204() {
-  if (parser.seen('S')) {  // Kept for legacy compatibility. Should NOT BE USED for new developments.
+  bool report = true;
+  if (parser.seenval('S')) { // Kept for legacy compatibility. Should NOT BE USED for new developments.
     planner.travel_acceleration = planner.acceleration = parser.value_linear_units();
-    SERIAL_ECHOLNPAIR("Setting Print and Travel Acceleration: ", planner.acceleration);
+    report = false;
   }
-  if (parser.seen('P')) {
+  if (parser.seenval('P')) {
     planner.acceleration = parser.value_linear_units();
-    SERIAL_ECHOLNPAIR("Setting Print Acceleration: ", planner.acceleration);
+    report = false;
   }
-  if (parser.seen('R')) {
+  if (parser.seenval('R')) {
     planner.retract_acceleration = parser.value_linear_units();
-    SERIAL_ECHOLNPAIR("Setting Retract Acceleration: ", planner.retract_acceleration);
+    report = false;
   }
-  if (parser.seen('T')) {
+  if (parser.seenval('T')) {
     planner.travel_acceleration = parser.value_linear_units();
-    SERIAL_ECHOLNPAIR("Setting Travel Acceleration: ", planner.travel_acceleration);
+    report = false;
+  }
+  if (report) {
+    SERIAL_ECHOPAIR("Acceleration: P", planner.acceleration);
+    SERIAL_ECHOPAIR(" R", planner.retract_acceleration);
+    SERIAL_ECHOLNPAIR(" T", planner.travel_acceleration);
   }
 }
 
@@ -9008,26 +9017,45 @@ inline void gcode_M205() {
 #elif ENABLED(X_DUAL_ENDSTOPS) || ENABLED(Y_DUAL_ENDSTOPS) || ENABLED(Z_DUAL_ENDSTOPS)
 
   /**
-   * M666: For Z Dual Endstop setup, set z axis offset to the z2 axis.
+   * M666: Set Dual Endstops offsets for X, Y, and/or Z.
+   *       With no parameters report current offsets.
    */
   inline void gcode_M666() {
-    SERIAL_ECHOPGM("Dual Endstop Adjustment (mm): ");
+    bool report = true;
     #if ENABLED(X_DUAL_ENDSTOPS)
-      if (parser.seen('X')) x_endstop_adj = parser.value_linear_units();
-      SERIAL_ECHOPAIR(" X", x_endstop_adj);
+      if (parser.seenval('X')) {
+        endstops.x_endstop_adj = parser.value_linear_units();
+        report = false;
+      }
     #endif
     #if ENABLED(Y_DUAL_ENDSTOPS)
-      if (parser.seen('Y')) y_endstop_adj = parser.value_linear_units();
-      SERIAL_ECHOPAIR(" Y", y_endstop_adj);
+      if (parser.seenval('Y')) {
+        endstops.y_endstop_adj = parser.value_linear_units();
+        report = false;
+      }
     #endif
     #if ENABLED(Z_DUAL_ENDSTOPS)
-      if (parser.seen('Z')) z_endstop_adj = parser.value_linear_units();
-      SERIAL_ECHOPAIR(" Z", z_endstop_adj);
+      if (parser.seenval('Z')) {
+        endstops.z_endstop_adj = parser.value_linear_units();
+        report = false;
+      }
     #endif
-    SERIAL_EOL();
+    if (report) {
+      SERIAL_ECHOPGM("Dual Endstop Adjustment (mm): ");
+      #if ENABLED(X_DUAL_ENDSTOPS)
+        SERIAL_ECHOPAIR(" X", endstops.x_endstop_adj);
+      #endif
+      #if ENABLED(Y_DUAL_ENDSTOPS)
+        SERIAL_ECHOPAIR(" Y", endstops.y_endstop_adj);
+      #endif
+      #if ENABLED(Z_DUAL_ENDSTOPS)
+        SERIAL_ECHOPAIR(" Z", endstops.z_endstop_adj);
+      #endif
+      SERIAL_EOL();
+    }
   }
 
-#endif // !DELTA && Z_DUAL_ENDSTOPS
+#endif // X_DUAL_ENDSTOPS || Y_DUAL_ENDSTOPS || Z_DUAL_ENDSTOPS
 
 #if ENABLED(FWRETRACT)
 
@@ -13835,7 +13863,7 @@ void loop() {
           card.closefile();
           SERIAL_PROTOCOLLNPGM(MSG_FILE_SAVED);
 
-          #ifndef USBCON
+          #if !(defined(__AVR__) && defined(USBCON))
             #if ENABLED(SERIAL_STATS_DROPPED_RX)
               SERIAL_ECHOLNPAIR("Dropped bytes: ", customizedSerial.dropped());
             #endif
@@ -13843,7 +13871,7 @@ void loop() {
             #if ENABLED(SERIAL_STATS_MAX_RX_QUEUED)
               SERIAL_ECHOLNPAIR("Max RX Queue Size: ", customizedSerial.rxMaxEnqueued());
             #endif
-          #endif // !USBCON
+          #endif // !(__AVR__ && USBCON)
 
           ok_to_send();
         }
