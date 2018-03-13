@@ -165,7 +165,7 @@
  * M209 - Turn Automatic Retract Detection on/off: S<0|1> (For slicers that don't support G10/11). (Requires FWRETRACT)
           Every normal extrude-only move will be classified as retract depending on the direction.
  * M211 - Enable, Disable, and/or Report software endstops: S<0|1> (Requires MIN_SOFTWARE_ENDSTOPS or MAX_SOFTWARE_ENDSTOPS)
- * M218 - Set a tool offset: "M218 T<index> X<offset> Y<offset>". (Requires 2 or more extruders)
+ * M218 - Set/get a tool offset: "M218 T<index> X<offset> Y<offset>". (Requires 2 or more extruders)
  * M220 - Set Feedrate Percentage: "M220 S<percent>" (i.e., "FR" on the LCD)
  * M221 - Set Flow Percentage: "M221 S<percent>"
  * M226 - Wait until a pin is in a given state: "M226 P<pin> S<state>"
@@ -1557,10 +1557,11 @@ inline void buffer_line_to_destination(const float &fr_mm_s) {
 #endif // IS_KINEMATIC
 
 /**
- *  Plan a move to (X, Y, Z) and set the current_position
- *  The final current_position may not be the one that was requested
+ * Plan a move to (X, Y, Z) and set the current_position.
+ * The final current_position may not be the one that was requested
+ * Caution: 'destination' is modified by this function.
  */
-void do_blocking_move_to(const float &rx, const float &ry, const float &rz, const float &fr_mm_s/*=0.0*/) {
+void do_blocking_move_to(const float rx, const float ry, const float rz, const float &fr_mm_s/*=0.0*/) {
   const float old_feedrate_mm_s = feedrate_mm_s;
 
   #if ENABLED(DEBUG_LEVELING_FEATURE)
@@ -3839,6 +3840,15 @@ inline void gcode_G4() {
 
 #endif // DELTA
 
+#ifdef Z_AFTER_PROBING
+  void move_z_after_probing() {
+    if (current_position[Z_AXIS] != Z_AFTER_PROBING) {
+      do_blocking_move_to_z(Z_AFTER_PROBING);
+      current_position[Z_AXIS] = Z_AFTER_PROBING;
+    }
+  }
+#endif
+
 #if ENABLED(Z_SAFE_HOMING)
 
   inline void home_z_safely() {
@@ -4068,6 +4078,11 @@ inline void gcode_G28(const bool always_home_all) {
         #else
           HOMEAXIS(Z);
         #endif
+
+        #if HOMING_Z_WITH_PROBE
+          move_z_after_probing();
+        #endif
+
       } // home_all || homeZ
     #endif // Z_HOME_DIR < 0
 
@@ -4118,16 +4133,6 @@ inline void gcode_G28(const bool always_home_all) {
 } // G28
 
 void home_all_axes() { gcode_G28(true); }
-
-#if HAS_PROBING_PROCEDURE
-
-  void out_of_range_error(const char* p_edge) {
-    SERIAL_PROTOCOLPGM("?Probe ");
-    serialprintPGM(p_edge);
-    SERIAL_PROTOCOLLNPGM(" position out of range.");
-  }
-
-#endif
 
 #if ENABLED(MESH_BED_LEVELING) || ENABLED(PROBE_MANUALLY)
 
@@ -4642,32 +4647,9 @@ void home_all_axes() { gcode_G28(true); }
         front_probe_bed_position = parser.seenval('F') ? (int)RAW_Y_POSITION(parser.value_linear_units()) : FRONT_PROBE_BED_POSITION;
         back_probe_bed_position  = parser.seenval('B') ? (int)RAW_Y_POSITION(parser.value_linear_units()) : BACK_PROBE_BED_POSITION;
 
-        const bool left_out_l = left_probe_bed_position < MIN_PROBE_X,
-                   left_out = left_out_l || left_probe_bed_position > right_probe_bed_position - (MIN_PROBE_EDGE),
-                   right_out_r = right_probe_bed_position > MAX_PROBE_X,
-                   right_out = right_out_r || right_probe_bed_position < left_probe_bed_position + MIN_PROBE_EDGE,
-                   front_out_f = front_probe_bed_position < MIN_PROBE_Y,
-                   front_out = front_out_f || front_probe_bed_position > back_probe_bed_position - (MIN_PROBE_EDGE),
-                   back_out_b = back_probe_bed_position > MAX_PROBE_Y,
-                   back_out = back_out_b || back_probe_bed_position < front_probe_bed_position + MIN_PROBE_EDGE;
-
-        if (left_out || right_out || front_out || back_out) {
-          if (left_out) {
-            out_of_range_error(PSTR("(L)eft"));
-            left_probe_bed_position = left_out_l ? MIN_PROBE_X : right_probe_bed_position - (MIN_PROBE_EDGE);
-          }
-          if (right_out) {
-            out_of_range_error(PSTR("(R)ight"));
-            right_probe_bed_position = right_out_r ? MAX_PROBE_X : left_probe_bed_position + MIN_PROBE_EDGE;
-          }
-          if (front_out) {
-            out_of_range_error(PSTR("(F)ront"));
-            front_probe_bed_position = front_out_f ? MIN_PROBE_Y : back_probe_bed_position - (MIN_PROBE_EDGE);
-          }
-          if (back_out) {
-            out_of_range_error(PSTR("(B)ack"));
-            back_probe_bed_position = back_out_b ? MAX_PROBE_Y : front_probe_bed_position + MIN_PROBE_EDGE;
-          }
+        if ( !position_is_reachable_by_probe(left_probe_bed_position, front_probe_bed_position)
+          || !position_is_reachable_by_probe(right_probe_bed_position, back_probe_bed_position)) {
+          SERIAL_PROTOCOLLNPGM("? (L,R,F,B) out of bounds.");
           return;
         }
 
@@ -5015,7 +4997,7 @@ void home_all_axes() { gcode_G28(true); }
 
       #endif // AUTO_BED_LEVELING_3POINT
 
-      // Raise to _Z_CLEARANCE_DEPLOY_PROBE. Stow the probe.
+      // Stow the probe. No raise for FIX_MOUNTED_PROBE.
       if (STOW_PROBE()) {
         set_bed_leveling_enabled(abl_should_enable);
         measured_z = NAN;
@@ -5249,12 +5231,16 @@ void home_all_axes() { gcode_G28(true); }
       if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("<<< G29");
     #endif
 
-    report_current_position();
-
     KEEPALIVE_STATE(IN_HANDLER);
 
     if (planner.leveling_active)
       SYNC_PLAN_POSITION_KINEMATIC();
+
+    #if HAS_BED_PROBE
+      move_z_after_probing();
+    #endif
+
+    report_current_position();
   }
 
 #endif // OLDSCHOOL_ABL
@@ -5283,7 +5269,8 @@ void home_all_axes() { gcode_G28(true); }
 
     setup_for_endstop_or_probe_move();
 
-    const float measured_z = probe_pt(xpos, ypos, parser.boolval('E'), 1);
+    const bool do_stow = parser.boolval('E');
+    const float measured_z = probe_pt(xpos, ypos, do_stow, 1);
 
     if (!isnan(measured_z)) {
       SERIAL_PROTOCOLPAIR("Bed X: ", FIXFLOAT(xpos));
@@ -5292,6 +5279,8 @@ void home_all_axes() { gcode_G28(true); }
     }
 
     clean_up_after_endstop_or_probe_move();
+
+    if (do_stow) move_z_after_probing();
 
     report_current_position();
   }
@@ -7396,21 +7385,10 @@ inline void gcode_M42() {
     const float X_probe_location = parser.linearval('X', X_current + X_PROBE_OFFSET_FROM_EXTRUDER),
                 Y_probe_location = parser.linearval('Y', Y_current + Y_PROBE_OFFSET_FROM_EXTRUDER);
 
-    #if DISABLED(DELTA)
-      if (!WITHIN(X_probe_location, MIN_PROBE_X, MAX_PROBE_X)) {
-        out_of_range_error(PSTR("X"));
-        return;
-      }
-      if (!WITHIN(Y_probe_location, MIN_PROBE_Y, MAX_PROBE_Y)) {
-        out_of_range_error(PSTR("Y"));
-        return;
-      }
-    #else
-      if (!position_is_reachable_by_probe(X_probe_location, Y_probe_location)) {
-        SERIAL_PROTOCOLLNPGM("? (X,Y) location outside of probeable radius.");
-        return;
-      }
-    #endif
+    if (!position_is_reachable_by_probe(X_probe_location, Y_probe_location)) {
+      SERIAL_PROTOCOLLNPGM("? (X,Y) out of bounds.");
+      return;
+    }
 
     bool seen_L = parser.seen('L');
     uint8_t n_legs = seen_L ? parser.value_byte() : 0;
@@ -7455,8 +7433,8 @@ inline void gcode_M42() {
           float angle = random(0.0, 360.0);
           const float radius = random(
             #if ENABLED(DELTA)
-              0.1250000000 * (DELTA_PROBEABLE_RADIUS),
-              0.3333333333 * (DELTA_PROBEABLE_RADIUS)
+              0.1250000000 * (DELTA_PRINTABLE_RADIUS),
+              0.3333333333 * (DELTA_PRINTABLE_RADIUS)
             #else
               5.0, 0.125 * min(X_BED_SIZE, Y_BED_SIZE)
             #endif
@@ -7600,6 +7578,7 @@ inline void gcode_M42() {
       set_bed_leveling_enabled(was_enabled);
     #endif
 
+    move_z_after_probing();
     report_current_position();
   }
 
@@ -9131,7 +9110,7 @@ inline void gcode_M211() {
 #if HOTENDS > 1
 
   /**
-   * M218 - set hotend offset (in linear units)
+   * M218 - Set/get hotend offset (in linear units)
    *
    *   T<tool>
    *   X<xoffset>
@@ -9141,26 +9120,38 @@ inline void gcode_M211() {
   inline void gcode_M218() {
     if (get_target_extruder_from_command(218) || target_extruder == 0) return;
 
-    if (parser.seenval('X')) hotend_offset[X_AXIS][target_extruder] = parser.value_linear_units();
-    if (parser.seenval('Y')) hotend_offset[Y_AXIS][target_extruder] = parser.value_linear_units();
+    bool report = true;
+    if (parser.seenval('X')) {
+      hotend_offset[X_AXIS][target_extruder] = parser.value_linear_units();
+      report = false;
+    }
+    if (parser.seenval('Y')) {
+      hotend_offset[Y_AXIS][target_extruder] = parser.value_linear_units();
+      report = false;
+    }
 
     #if ENABLED(DUAL_X_CARRIAGE) || ENABLED(SWITCHING_NOZZLE) || ENABLED(PARKING_EXTRUDER)
-      if (parser.seenval('Z')) hotend_offset[Z_AXIS][target_extruder] = parser.value_linear_units();
+      if (parser.seenval('Z')) {
+        hotend_offset[Z_AXIS][target_extruder] = parser.value_linear_units();
+        report = false;
+      }
     #endif
 
-    SERIAL_ECHO_START();
-    SERIAL_ECHOPGM(MSG_HOTEND_OFFSET);
-    HOTEND_LOOP() {
-      SERIAL_CHAR(' ');
-      SERIAL_ECHO(hotend_offset[X_AXIS][e]);
-      SERIAL_CHAR(',');
-      SERIAL_ECHO(hotend_offset[Y_AXIS][e]);
-      #if ENABLED(DUAL_X_CARRIAGE) || ENABLED(SWITCHING_NOZZLE) || ENABLED(PARKING_EXTRUDER)
+    if (report) {
+      SERIAL_ECHO_START();
+      SERIAL_ECHOPGM(MSG_HOTEND_OFFSET);
+      HOTEND_LOOP() {
+        SERIAL_CHAR(' ');
+        SERIAL_ECHO(hotend_offset[X_AXIS][e]);
         SERIAL_CHAR(',');
-        SERIAL_ECHO(hotend_offset[Z_AXIS][e]);
-      #endif
+        SERIAL_ECHO(hotend_offset[Y_AXIS][e]);
+        #if ENABLED(DUAL_X_CARRIAGE) || ENABLED(SWITCHING_NOZZLE) || ENABLED(PARKING_EXTRUDER)
+          SERIAL_CHAR(',');
+          SERIAL_ECHO(hotend_offset[Z_AXIS][e]);
+        #endif
+      }
+      SERIAL_EOL();
     }
-    SERIAL_EOL();
   }
 
 #endif // HOTENDS > 1
@@ -9665,12 +9656,19 @@ inline void gcode_M400() { stepper.synchronize(); }
   /**
    * M401: Deploy and activate the Z probe
    */
-  inline void gcode_M401() { DEPLOY_PROBE(); }
+  inline void gcode_M401() {
+    DEPLOY_PROBE();
+    report_current_position();
+  }
 
   /**
    * M402: Deactivate and stow the Z probe
    */
-  inline void gcode_M402() { STOW_PROBE(); }
+  inline void gcode_M402() {
+    STOW_PROBE();
+    move_z_after_probing();
+    report_current_position();
+  }
 
 #endif // HAS_BED_PROBE
 
@@ -13820,12 +13818,6 @@ void setup() {
       pe_deactivate_magnet(0);
       pe_deactivate_magnet(1);
     #endif
-  #endif
-  #if ENABLED(MKS_12864OLED) || ENABLED(MKS_12864OLED_SSD1306)
-    SET_OUTPUT(LCD_PINS_DC);
-    OUT_WRITE(LCD_PINS_RS, LOW);
-    delay(1000);
-    WRITE(LCD_PINS_RS, HIGH);
   #endif
 
   #if ENABLED(USE_WATCHDOG)
