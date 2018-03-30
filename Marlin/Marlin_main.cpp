@@ -2900,14 +2900,17 @@ static void do_homing_move(const AxisEnum axis, const float distance, const floa
   const bool is_home_dir = (axis_home_dir > 0) == (distance > 0);
 
   if (is_home_dir) {
-    #if HOMING_Z_WITH_PROBE && ENABLED(BLTOUCH)
-      const bool deploy_bltouch = (axis == Z_AXIS && is_home_dir);
-      if (deploy_bltouch) set_bltouch_deployed(true);
-    #endif
 
-    #if QUIET_PROBING
-      if (axis == Z_AXIS) probing_pause(true);
-    #endif
+    if (axis == Z_AXIS) {
+      #if HOMING_Z_WITH_PROBE
+        #if ENABLED(BLTOUCH)
+          set_bltouch_deployed(true);
+        #endif
+        #if QUIET_PROBING
+          probing_pause(true);
+        #endif
+      #endif
+    }
 
     // Disable stealthChop if used. Enable diag1 pin on driver.
     #if ENABLED(SENSORLESS_HOMING)
@@ -2932,13 +2935,17 @@ static void do_homing_move(const AxisEnum axis, const float distance, const floa
   stepper.synchronize();
 
   if (is_home_dir) {
-    #if QUIET_PROBING
-      if (axis == Z_AXIS) probing_pause(false);
-    #endif
 
-    #if HOMING_Z_WITH_PROBE && ENABLED(BLTOUCH)
-      if (deploy_bltouch) set_bltouch_deployed(false);
-    #endif
+    if (axis == Z_AXIS) {
+      #if HOMING_Z_WITH_PROBE
+        #if QUIET_PROBING
+          probing_pause(false);
+        #endif
+        #if ENABLED(BLTOUCH)
+          set_bltouch_deployed(false);
+        #endif
+      #endif
+    }
 
     endstops.hit_on_purpose();
 
@@ -3650,7 +3657,6 @@ inline void gcode_G4() {
     #if ENABLED(SENSORLESS_HOMING)
       sensorless_homing_per_axis(X_AXIS, false);
       sensorless_homing_per_axis(Y_AXIS, false);
-      safe_delay(500); // Short delay needed to settle
     #endif
   }
 
@@ -6234,9 +6240,11 @@ inline void gcode_G92() {
       hasS = ms > 0;
     }
 
+    const bool has_message = !hasP && !hasS && args && *args;
+
     #if ENABLED(ULTIPANEL)
 
-      if (!hasP && !hasS && args && *args)
+      if (has_message)
         lcd_setstatus(args, true);
       else {
         LCD_MESSAGEPGM(MSG_USERWAIT);
@@ -6247,7 +6255,7 @@ inline void gcode_G92() {
 
     #else
 
-      if (!hasP && !hasS && args && *args) {
+      if (has_message) {
         SERIAL_ECHO_START();
         SERIAL_ECHOLN(args);
       }
@@ -6265,19 +6273,21 @@ inline void gcode_G92() {
     }
     else {
       #if ENABLED(ULTIPANEL)
-        if (lcd_detected()) {
-          while (wait_for_user) idle();
-          print_job_timer.isPaused() ? LCD_MESSAGEPGM(WELCOME_MSG) : LCD_MESSAGEPGM(MSG_RESUMING);
-        }
-      #else
-        while (wait_for_user) idle();
+        if (lcd_detected())
       #endif
+          while (wait_for_user) idle();
     }
 
     #if ENABLED(PRINTER_EVENT_LEDS) && ENABLED(SDSUPPORT)
       if (lights_off_after_print) {
         leds.set_off();
         lights_off_after_print = false;
+      }
+    #endif
+
+    #if ENABLED(ULTIPANEL)
+      if (lcd_detected()) {
+        print_job_timer.isPaused() ? LCD_MESSAGEPGM(WELCOME_MSG) : LCD_MESSAGEPGM(MSG_RESUMING);
       }
     #endif
 
@@ -11598,7 +11608,7 @@ void tool_change(const uint8_t tmp_extruder, const float fr_mm_s/*=0.0*/, bool n
               hotend_offset[Y_AXIS][tmp_extruder] - hotend_offset[Y_AXIS][active_extruder]
             };
 
-            #if HAS_MESH
+            #if HAS_MESH && PLANNER_LEVELING
 
               if (planner.leveling_active) {
                 #if ENABLED(DEBUG_LEVELING_FEATURE)
@@ -11616,7 +11626,7 @@ void tool_change(const uint8_t tmp_extruder, const float fr_mm_s/*=0.0*/, bool n
                 #endif
               }
 
-            #endif // HAS_MESH
+            #endif // HAS_MESH && PLANNER_LEVELING
 
           #endif // !HAS_ABL
 
