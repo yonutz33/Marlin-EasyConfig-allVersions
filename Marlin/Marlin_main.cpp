@@ -3095,7 +3095,7 @@ static void homeaxis(const AxisEnum axis) {
       #if ENABLED(DEBUG_LEVELING_FEATURE)
         if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("delta_endstop_adj:");
       #endif
-      do_homing_move(axis, delta_endstop_adj[axis] - MIN_STEPS_PER_SEGMENT / planner.axis_steps_per_mm[axis] * Z_HOME_DIR);
+      do_homing_move(axis, delta_endstop_adj[axis] - (MIN_STEPS_PER_SEGMENT + 1) * planner.steps_to_mm[axis] * Z_HOME_DIR);
     }
 
   #else
@@ -4258,6 +4258,8 @@ void home_all_axes() { gcode_G28(true); }
             // For the initial G29 S2 save software endstop state
             enable_soft_endstops = soft_endstops_enabled;
           #endif
+          // Move close to the bed before the first point
+          do_blocking_move_to_z(Z_MIN_POS);
         }
         else {
           // For G29 S2 after adjusting Z.
@@ -4268,16 +4270,14 @@ void home_all_axes() { gcode_G28(true); }
         }
         // If there's another point to sample, move there with optional lift.
         if (mbl_probe_index < GRID_MAX_POINTS) {
-          mbl.zigzag(mbl_probe_index, px, py);
-          _manual_goto_xy(mbl.index_to_xpos[px], mbl.index_to_ypos[py]);
-
           #if HAS_SOFTWARE_ENDSTOPS
             // Disable software endstops to allow manual adjustment
             // If G29 is not completed, they will not be re-enabled
             soft_endstops_enabled = false;
           #endif
 
-          mbl_probe_index++;
+          mbl.zigzag(mbl_probe_index++, px, py);
+          _manual_goto_xy(mbl.index_to_xpos[px], mbl.index_to_ypos[py]);
         }
         else {
           // One last "return to the bed" (as originally coded) at completion
@@ -8779,9 +8779,18 @@ inline void gcode_M117() { lcd_setstatus(parser.string_arg); }
  *  E1  Have the host 'echo:' the text
  */
 inline void gcode_M118() {
-  if (parser.seenval('E') && parser.value_bool()) SERIAL_ECHO_START();
-  if (parser.seenval('A') && parser.value_bool()) SERIAL_ECHOPGM("// ");
-  SERIAL_ECHOLN(parser.string_arg);
+  bool hasE = false, hasA = false;
+  char *p = parser.string_arg;
+  for (uint8_t i = 2; i--;)
+    if ((p[0] == 'A' || p[0] == 'E') && p[1] == '1') {
+      if (p[0] == 'A') hasA = true;
+      if (p[0] == 'E') hasE = true;
+      p += 2;
+      while (*p == ' ') ++p;
+    }
+  if (hasE) SERIAL_ECHO_START();
+  if (hasA) SERIAL_ECHOPGM("// ");
+  SERIAL_ECHOLN(p);
 }
 
 /**
