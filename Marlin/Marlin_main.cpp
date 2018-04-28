@@ -1552,6 +1552,9 @@ static void set_axis_is_at_home(const AxisEnum axis) {
  * Some planner shorthand inline functions
  */
 inline float get_homing_bump_feedrate(const AxisEnum axis) {
+  #if HOMING_Z_WITH_PROBE
+    if (axis == Z_AXIS) return Z_PROBE_SPEED_SLOW;
+  #endif
   static const uint8_t homing_bump_divisor[] PROGMEM = HOMING_BUMP_DIVISOR;
   uint8_t hbd = pgm_read_byte(&homing_bump_divisor[axis]);
   if (hbd < 1) {
@@ -4748,8 +4751,17 @@ void home_all_axes() { gcode_G28(true); }
         front_probe_bed_position = parser.seenval('F') ? (int)RAW_Y_POSITION(parser.value_linear_units()) : FRONT_PROBE_BED_POSITION;
         back_probe_bed_position  = parser.seenval('B') ? (int)RAW_Y_POSITION(parser.value_linear_units()) : BACK_PROBE_BED_POSITION;
 
-        if ( !position_is_reachable_by_probe(left_probe_bed_position, front_probe_bed_position)
-          || !position_is_reachable_by_probe(right_probe_bed_position, back_probe_bed_position)) {
+        if (
+          #if IS_SCARA || ENABLED(DELTA)
+               !position_is_reachable_by_probe(left_probe_bed_position, 0)
+            || !position_is_reachable_by_probe(right_probe_bed_position, 0)
+            || !position_is_reachable_by_probe(0, front_probe_bed_position)
+            || !position_is_reachable_by_probe(0, back_probe_bed_position)
+          #else
+               !position_is_reachable_by_probe(left_probe_bed_position, front_probe_bed_position)
+            || !position_is_reachable_by_probe(right_probe_bed_position, back_probe_bed_position)
+          #endif
+        ) {
           SERIAL_PROTOCOLLNPGM("? (L,R,F,B) out of bounds.");
           return;
         }
@@ -10063,7 +10075,7 @@ void quickstop_stepper() {
         #if ENABLED(AUTO_BED_LEVELING_UBL)
 
           set_bed_leveling_enabled(false);
-          ubl.adjust_mesh_to_mean(cval);
+          ubl.adjust_mesh_to_mean(true, cval);
 
         #else
 
@@ -12052,6 +12064,8 @@ void process_parsed_command() {
       #if ENABLED(DEBUG_GCODE_PARSER)
         case 800: parser.debug(); break;                          // G800: GCode Parser Test for G
       #endif
+
+      default: parser.unknown_command_error();
     }
     break;
 
@@ -12409,6 +12423,8 @@ void process_parsed_command() {
       #endif
 
       case 999: gcode_M999(); break;                              // M999: Restart after being Stopped
+      
+      default: parser.unknown_command_error();
     }
     break;
 
