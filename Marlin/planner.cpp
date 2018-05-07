@@ -1477,7 +1477,9 @@ void Planner::buffer_sync_block() {
   block->steps[C_AXIS] = position[C_AXIS];
   block->steps[E_AXIS] = position[E_AXIS];
 
-  block->use_advance_lead = false;
+  #if ENABLED(LIN_ADVANCE)
+    block->use_advance_lead = false;
+  #endif
 
   block->nominal_speed   =
   block->entry_speed     =
