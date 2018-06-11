@@ -4086,6 +4086,10 @@ inline void gcode_G28(const bool always_home_all) {
     workspace_plane = PLANE_XY;
   #endif
 
+  #if ENABLED(BLTOUCH)
+    set_bltouch_deployed(false);
+  #endif
+
   // Always home with tool 0 active
   #if HOTENDS > 1
     #if DISABLED(DELTA) || ENABLED(DELTA_HOME_TO_SAFE_ZONE)
@@ -7238,6 +7242,11 @@ static bool pin_is_protected(const pin_t pin) {
   return false;
 }
 
+inline void protected_pin_err() {
+  SERIAL_ERROR_START();
+  SERIAL_ERRORLNPGM(MSG_ERR_PROTECTED_PIN);
+}
+
 /**
  * M42: Change pin status via GCode
  *
@@ -7251,11 +7260,7 @@ inline void gcode_M42() {
   const pin_t pin_number = parser.byteval('P', LED_PIN);
   if (pin_number < 0) return;
 
-  if (pin_is_protected(pin_number)) {
-    SERIAL_ERROR_START();
-    SERIAL_ERRORLNPGM(MSG_ERR_PROTECTED_PIN);
-    return;
-  }
+  if (pin_is_protected(pin_number)) return protected_pin_err();
 
   pinMode(pin_number, OUTPUT);
   digitalWrite(pin_number, pin_status);
@@ -7281,21 +7286,21 @@ inline void gcode_M42() {
   #include "pinsDebug.h"
 
   inline void toggle_pins() {
-    const bool I_flag = parser.boolval('I');
+    const bool ignore_protection = parser.boolval('I');
     const int repeat = parser.intval('R', 1),
               start = parser.intval('S'),
               end = parser.intval('L', NUM_DIGITAL_PINS - 1),
               wait = parser.intval('W', 500);
 
     for (uint8_t pin = start; pin <= end; pin++) {
-      //report_pin_state_extended(pin, I_flag, false);
+      //report_pin_state_extended(pin, ignore_protection, false);
 
-      if (!I_flag && pin_is_protected(pin)) {
-        report_pin_state_extended(pin, I_flag, true, "Untouched ");
+      if (!ignore_protection && pin_is_protected(pin)) {
+        report_pin_state_extended(pin, ignore_protection, true, "Untouched ");
         SERIAL_EOL();
       }
       else {
-        report_pin_state_extended(pin, I_flag, true, "Pulsing   ");
+        report_pin_state_extended(pin, ignore_protection, true, "Pulsing   ");
         #if AVR_AT90USB1286_FAMILY // Teensy IDEs don't know about these pins so must use FASTIO
           if (pin == TEENSY_E2) {
             SET_OUTPUT(TEENSY_E2);
@@ -7514,7 +7519,7 @@ inline void gcode_M42() {
       SERIAL_PROTOCOLLNPGM("Watching pins");
       byte pin_state[last_pin - first_pin + 1];
       for (pin_t pin = first_pin; pin <= last_pin; pin++) {
-        if (pin_is_protected(pin) && !ignore_protection) continue;
+        if (!ignore_protection && pin_is_protected(pin)) continue;
         pinMode(pin, INPUT_PULLUP);
         delay(1);
         /*
@@ -7532,7 +7537,7 @@ inline void gcode_M42() {
 
       for (;;) {
         for (pin_t pin = first_pin; pin <= last_pin; pin++) {
-          if (pin_is_protected(pin) && !ignore_protection) continue;
+          if (!ignore_protection && pin_is_protected(pin)) continue;
           const byte val =
             /*
               IS_ANALOG(pin)
@@ -8366,19 +8371,19 @@ inline void gcode_M111() {
     SERIAL_ECHOPGM(MSG_DEBUG_OFF);
     #if !defined(__AVR__) || !defined(USBCON)
       #if ENABLED(SERIAL_STATS_RX_BUFFER_OVERRUNS)
-        SERIAL_ECHOLNPAIR("Buffer Overruns: ", customizedSerial.buffer_overruns());
+        SERIAL_ECHOPAIR("\nBuffer Overruns: ", customizedSerial.buffer_overruns());
       #endif
 
       #if ENABLED(SERIAL_STATS_RX_FRAMING_ERRORS)
-        SERIAL_ECHOLNPAIR("Framing Errors: ", customizedSerial.framing_errors());
+        SERIAL_ECHOPAIR("\nFraming Errors: ", customizedSerial.framing_errors());
       #endif
 
       #if ENABLED(SERIAL_STATS_DROPPED_RX)
-        SERIAL_ECHOLNPAIR("Dropped bytes: ", customizedSerial.dropped());
+        SERIAL_ECHOPAIR("\nDropped bytes: ", customizedSerial.dropped());
       #endif
 
       #if ENABLED(SERIAL_STATS_MAX_RX_QUEUED)
-        SERIAL_ECHOLNPAIR("Max RX Queue Size: ", customizedSerial.rxMaxEnqueued());
+        SERIAL_ECHOPAIR("\nMax RX Queue Size: ", customizedSerial.rxMaxEnqueued());
       #endif
     #endif // !__AVR__ || !USBCON
   }
@@ -9119,28 +9124,43 @@ inline void gcode_M204() {
 /**
  * M205: Set Advanced Settings
  *
+ *    B = Min Segment Time (µs)
  *    S = Min Feed Rate (units/s)
  *    T = Min Travel Feed Rate (units/s)
- *    B = Min Segment Time (µs)
  *    X = Max X Jerk (units/sec^2)
  *    Y = Max Y Jerk (units/sec^2)
  *    Z = Max Z Jerk (units/sec^2)
  *    E = Max E Jerk (units/sec^2)
+ *    J = Junction Deviation (mm) (Requires JUNCTION_DEVIATION)
  */
 inline void gcode_M205() {
+  if (parser.seen('B')) planner.min_segment_time_us = parser.value_ulong();
   if (parser.seen('S')) planner.min_feedrate_mm_s = parser.value_linear_units();
   if (parser.seen('T')) planner.min_travel_feedrate_mm_s = parser.value_linear_units();
-  if (parser.seen('B')) planner.min_segment_time_us = parser.value_ulong();
-  if (parser.seen('X')) planner.max_jerk[X_AXIS] = parser.value_linear_units();
-  if (parser.seen('Y')) planner.max_jerk[Y_AXIS] = parser.value_linear_units();
-  if (parser.seen('Z')) {
-    planner.max_jerk[Z_AXIS] = parser.value_linear_units();
-    #if HAS_MESH
-      if (planner.max_jerk[Z_AXIS] <= 0.1)
-        SERIAL_ECHOLNPGM("WARNING! Low Z Jerk may lead to unwanted pauses.");
-    #endif
-  }
-  if (parser.seen('E')) planner.max_jerk[E_AXIS] = parser.value_linear_units();
+  #if ENABLED(JUNCTION_DEVIATION)
+    if (parser.seen('J')) {
+      const float junc_dev = parser.value_linear_units();
+      if (WITHIN(junc_dev, 0.01, 0.3))
+        planner.junction_deviation_mm = junc_dev;
+      else {
+        SERIAL_ERROR_START();
+        SERIAL_ERRORLNPGM("?J out of range (0.01 to 0.3)");
+      }
+    }
+  #else
+    if (parser.seen('X')) planner.max_jerk[X_AXIS] = parser.value_linear_units();
+    if (parser.seen('Y')) planner.max_jerk[Y_AXIS] = parser.value_linear_units();
+    if (parser.seen('Z')) {
+      planner.max_jerk[Z_AXIS] = parser.value_linear_units();
+      #if HAS_MESH
+        if (planner.max_jerk[Z_AXIS] <= 0.1)
+          SERIAL_ECHOLNPGM("WARNING! Low Z Jerk may lead to unwanted pauses.");
+      #endif
+    }
+  #endif
+  #if DISABLED(JUNCTION_DEVIATION) || ENABLED(LIN_ADVANCE)
+    if (parser.seen('E')) planner.max_jerk[E_AXIS] = parser.value_linear_units();
+  #endif
 }
 
 #if HAS_M206_COMMAND
@@ -9458,30 +9478,21 @@ inline void gcode_M221() {
  */
 inline void gcode_M226() {
   if (parser.seen('P')) {
-    const int pin = parser.value_int(),
-              pin_state = parser.intval('S', -1); // required pin state - default is inverted
-
-    if (WITHIN(pin_state, -1, 1) && pin > -1 && !pin_is_protected(pin)) {
-
-      int target = LOW;
-
-      planner.synchronize();
-
-      pinMode(pin, INPUT);
-      switch (pin_state) {
-        case 1:
-          target = HIGH;
-          break;
-        case 0:
-          target = LOW;
-          break;
-        case -1:
-          target = !digitalRead(pin);
-          break;
+    const int pin = parser.value_int(), pin_state = parser.intval('S', -1);
+    if (WITHIN(pin_state, -1, 1) && pin > -1) {
+      if (pin_is_protected(pin))
+        protected_pin_err();
+      else {
+        int target = LOW;
+        planner.synchronize();
+        pinMode(pin, INPUT);
+        switch (pin_state) {
+          case 1: target = HIGH; break;
+          case 0: target = LOW; break;
+          case -1: target = !digitalRead(pin); break;
+        }
+        while (digitalRead(pin) != target) idle();
       }
-
-      while (digitalRead(pin) != target) idle();
-
     } // pin_state -1 0 1 && pin > -1
   } // parser.seen('P')
 }
