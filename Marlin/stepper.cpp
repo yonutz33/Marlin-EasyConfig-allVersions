@@ -96,8 +96,6 @@ Stepper stepper; // Singleton
 
 // public:
 
-block_t* Stepper::current_block = NULL;  // A pointer to the block currently being traced
-
 #if ENABLED(X_DUAL_ENDSTOPS) || ENABLED(Y_DUAL_ENDSTOPS) || ENABLED(Z_DUAL_ENDSTOPS)
   bool Stepper::homing_dual_axis = false;
 #endif
@@ -107,6 +105,8 @@ block_t* Stepper::current_block = NULL;  // A pointer to the block currently bei
 #endif
 
 // private:
+
+block_t* Stepper::current_block = NULL; // A pointer to the block currently being traced
 
 uint8_t Stepper::last_direction_bits = 0,
         Stepper::axis_did_move;
@@ -379,6 +379,11 @@ void Stepper::set_directions() {
       }
     #endif
   #endif // !LIN_ADVANCE
+
+  // A small delay may be needed after changing direction
+  #if MINIMUM_STEPPER_DIR_DELAY > 0
+    DELAY_NS(MINIMUM_STEPPER_DIR_DELAY);
+  #endif
 }
 
 #if ENABLED(S_CURVE_ACCELERATION)
@@ -1123,6 +1128,8 @@ HAL_STEP_TIMER_ISR {
 #define STEP_MULTIPLY(A,B) MultiU24X32toH16(A, B)
 
 void Stepper::isr() {
+  DISABLE_ISRS();
+
   // Program timer compare for the maximum period, so it does NOT
   // flag an interrupt while this ISR is running - So changes from small
   // periods to big periods are respected and the timer does not reset to 0
@@ -1214,7 +1221,7 @@ void Stepper::isr() {
      * On AVR the ISR epilogue+prologue is estimated at 100 instructions - Give 8µs as margin
      * On ARM the ISR epilogue+prologue is estimated at 20 instructions - Give 1µs as margin
      */
-    min_ticks = HAL_timer_get_count(STEP_TIMER_NUM) + hal_timer_t((HAL_TICKS_PER_US) * 8);
+    min_ticks = HAL_timer_get_count(STEP_TIMER_NUM) + hal_timer_t((STEPPER_TIMER_TICKS_PER_US) * 8);
 
     /**
      * NB: If for some reason the stepper monopolizes the MPU, eventually the
@@ -1266,10 +1273,10 @@ void Stepper::stepper_pulse_phase_isr() {
   // Just update the value we will get at the end of the loop
   step_events_completed += events_to_do;
 
-  #if MINIMUM_STEPPER_PULSE
-    // Get the timer count and estimate the end of the pulse
-    hal_timer_t pulse_end = HAL_timer_get_count(PULSE_TIMER_NUM) + hal_timer_t((HAL_TICKS_PER_US) * (MINIMUM_STEPPER_PULSE));
-  #endif
+  // Get the timer count and estimate the end of the pulse
+  hal_timer_t pulse_end = HAL_timer_get_count(PULSE_TIMER_NUM) + hal_timer_t(MIN_PULSE_TICKS);
+
+  const hal_timer_t added_step_ticks = hal_timer_t(ADDED_STEP_TICKS);
 
   // Take multiple steps per interrupt (For high speed moves)
   do {
@@ -1342,9 +1349,10 @@ void Stepper::stepper_pulse_phase_isr() {
     #if MINIMUM_STEPPER_PULSE
       // Just wait for the requested pulse duration
       while (HAL_timer_get_count(PULSE_TIMER_NUM) < pulse_end) { /* nada */ }
-      // Add to the value, the value needed for the pulse end and ensuring the maximum driver rate is enforced
-      pulse_end += hal_timer_t(MIN_STEPPER_PULSE_CYCLES) - hal_timer_t((HAL_TICKS_PER_US) * (MINIMUM_STEPPER_PULSE));
     #endif
+
+    // Add the delay needed to ensure the maximum driver rate is enforced
+    if (signed(added_step_ticks) > 0) pulse_end += hal_timer_t(added_step_ticks);
 
     // Pulse stop
     #if HAS_X_STEP
@@ -1373,15 +1381,15 @@ void Stepper::stepper_pulse_phase_isr() {
     // Decrement the count of pending pulses to do
     --events_to_do;
 
-    #if MINIMUM_STEPPER_PULSE
-      // For minimum pulse time wait after stopping pulses also
-      if (events_to_do) {
-        // Just wait for the requested pulse duration
-        while (HAL_timer_get_count(PULSE_TIMER_NUM) < pulse_end) { /* nada */ }
+    // For minimum pulse time wait after stopping pulses also
+    if (events_to_do) {
+      // Just wait for the requested pulse duration
+      while (HAL_timer_get_count(PULSE_TIMER_NUM) < pulse_end) { /* nada */ }
+      #if MINIMUM_STEPPER_PULSE
         // Add to the value, the time that the pulse must be active (to be used on the next loop)
-        pulse_end += hal_timer_t((HAL_TICKS_PER_US) * (MINIMUM_STEPPER_PULSE));
-      }
-    #endif
+        pulse_end += hal_timer_t(MIN_PULSE_TICKS);
+      #endif
+    }
 
   } while (events_to_do);
 }
@@ -1393,7 +1401,7 @@ void Stepper::stepper_pulse_phase_isr() {
 uint32_t Stepper::stepper_block_phase_isr() {
 
   // If no queued movements, just wait 1ms for the next move
-  uint32_t interval = (HAL_STEPPER_TIMER_RATE / 1000);
+  uint32_t interval = (STEPPER_TIMER_RATE / 1000);
 
   // If there is a current block
   if (current_block) {
@@ -1609,12 +1617,13 @@ uint32_t Stepper::stepper_block_phase_isr() {
       acceleration_time = deceleration_time = 0;
 
       uint8_t oversampling = 0;                         // Assume we won't use it
+
       #if ENABLED(ADAPTIVE_STEP_SMOOTHING)
         // At this point, we must decide if we can use Stepper movement axis smoothing.
         uint32_t max_rate = current_block->nominal_rate;  // Get the maximum rate (maximum event speed)
         while (max_rate < MIN_STEP_ISR_FREQUENCY) {
           max_rate <<= 1;
-          if (max_rate >= MAX_1X_STEP_ISR_FREQUENCY) break;
+          if (max_rate >= MAX_STEP_ISR_FREQUENCY_1X) break;
           ++oversampling;
         }
         oversampling_factor = oversampling;
@@ -1691,7 +1700,7 @@ uint32_t Stepper::stepper_block_phase_isr() {
       // done against the endstop. So, check the limits here: If the movement
       // is against the limits, the block will be marked as to be killed, and
       // on the next call to this ISR, will be discarded.
-      endstops.check_possible_change();
+      endstops.update();
 
       #if ENABLED(Z_LATE_ENABLE)
         // If delayed Z enable, enable it now. This option will severely interfere with
@@ -1760,13 +1769,15 @@ uint32_t Stepper::stepper_block_phase_isr() {
           REV_E_DIR(active_extruder);
       #endif
 
+    // Get the timer count and estimate the end of the pulse
+    hal_timer_t pulse_end = HAL_timer_get_count(PULSE_TIMER_NUM) + hal_timer_t(MIN_PULSE_TICKS);
+
+    const hal_timer_t added_step_ticks = hal_timer_t(ADDED_STEP_TICKS);
+
     // Step E stepper if we have steps
     while (LA_steps) {
 
-      #if MINIMUM_STEPPER_PULSE
-        hal_timer_t pulse_end = HAL_timer_get_count(PULSE_TIMER_NUM) + hal_timer_t((HAL_TICKS_PER_US) * (MINIMUM_STEPPER_PULSE));
-      #endif
-
+      // Set the STEP pulse ON
       #if ENABLED(MIXING_EXTRUDER)
         MIXING_STEPPERS_LOOP(j) {
           // Step mixing steppers (proportionally)
@@ -1778,15 +1789,18 @@ uint32_t Stepper::stepper_block_phase_isr() {
         E_STEP_WRITE(active_extruder, !INVERT_E_STEP_PIN);
       #endif
 
+      // Enforce a minimum duration for STEP pulse ON
       #if MINIMUM_STEPPER_PULSE
         // Just wait for the requested pulse duration
         while (HAL_timer_get_count(PULSE_TIMER_NUM) < pulse_end) { /* nada */ }
-        // Add to the value, the value needed for the pulse end and ensuring the maximum driver rate is enforced
-        pulse_end += hal_timer_t(MIN_STEPPER_PULSE_CYCLES) - hal_timer_t((HAL_TICKS_PER_US) * (MINIMUM_STEPPER_PULSE));
       #endif
+
+      // Add the delay needed to ensure the maximum driver rate is enforced
+      if (signed(added_step_ticks) > 0) pulse_end += hal_timer_t(added_step_ticks);
 
       LA_steps < 0 ? ++LA_steps : --LA_steps;
 
+      // Set the STEP pulse OFF
       #if ENABLED(MIXING_EXTRUDER)
         MIXING_STEPPERS_LOOP(j) {
           if (delta_error_m[j] >= 0) {
@@ -1798,17 +1812,43 @@ uint32_t Stepper::stepper_block_phase_isr() {
         E_STEP_WRITE(active_extruder, INVERT_E_STEP_PIN);
       #endif
 
-      #if MINIMUM_STEPPER_PULSE
-        // For minimum pulse time wait before looping
-        // Just wait for the requested pulse duration
-        if (LA_steps) while (HAL_timer_get_count(PULSE_TIMER_NUM) < pulse_end) { /* nada */ }
-      #endif
-
+      // For minimum pulse time wait before looping
+      // Just wait for the requested pulse duration
+      if (LA_steps) {
+        while (HAL_timer_get_count(PULSE_TIMER_NUM) < pulse_end) { /* nada */ }
+        #if MINIMUM_STEPPER_PULSE
+          // Add to the value, the time that the pulse must be active (to be used on the next loop)
+          pulse_end += hal_timer_t(MIN_PULSE_TICKS);
+        #endif
+      }
     } // LA_steps
 
     return interval;
   }
 #endif // LIN_ADVANCE
+
+// Check if the given block is busy or not - Must not be called from ISR contexts
+// The current_block could change in the middle of the read by an Stepper ISR, so
+// we must explicitly prevent that!
+bool Stepper::is_block_busy(const block_t* const block) {
+  #define sw_barrier() asm volatile("": : :"memory");
+
+  // Keep reading until 2 consecutive reads return the same value,
+  // meaning there was no update in-between caused by an interrupt.
+  // This works because stepper ISRs happen at a slower rate than
+  // successive reads of a variable, so 2 consecutive reads with
+  // the same value means no interrupt updated it.
+  block_t* vold, *vnew = current_block;
+  sw_barrier();
+  do {
+    vold = vnew;
+    vnew = current_block;
+    sw_barrier();
+  } while (vold != vnew);
+
+  // Return if the block is busy or not
+  return block == vnew;
+}
 
 void Stepper::init() {
 
@@ -2007,7 +2047,9 @@ void Stepper::_set_position(const int32_t &a, const int32_t &b, const int32_t &c
 int32_t Stepper::position(const AxisEnum axis) {
   const bool was_enabled = STEPPER_ISR_ENABLED();
   if (was_enabled) DISABLE_STEPPER_DRIVER_INTERRUPT();
+
   const int32_t v = count_position[axis];
+
   if (was_enabled) ENABLE_STEPPER_DRIVER_INTERRUPT();
   return v;
 }
@@ -2045,8 +2087,11 @@ void Stepper::endstop_triggered(const AxisEnum axis) {
 int32_t Stepper::triggered_position(const AxisEnum axis) {
   const bool was_enabled = STEPPER_ISR_ENABLED();
   if (was_enabled) DISABLE_STEPPER_DRIVER_INTERRUPT();
+
   const int32_t v = endstops_trigsteps[axis];
+
   if (was_enabled) ENABLE_STEPPER_DRIVER_INTERRUPT();
+
   return v;
 }
 
